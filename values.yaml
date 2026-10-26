@@ -1,0 +1,230 @@
+# Default values for net_chart.
+# Bakrim (streambert) web app - Vite/React static build served by nginx.
+
+replicaCount: 2
+
+image:
+  # Build with:
+  #   docker build -f net_chart/Dockerfile -t bakrim:<tag> C:\Users\idk\Desktop\homenet\streambert
+  # Registry-free transfer to a server (no Docker Hub / GHCR needed):
+  #   net_chart\Send-BakrimImage.ps1 -Server user@your-server
+  # A plain name (no registry prefix) is intentional: the image is loaded onto
+  # the node directly, and pullPolicy IfNotPresent makes kubelet use the local
+  # copy instead of trying to pull from a registry.
+  repository: bakrim
+  pullPolicy: IfNotPresent
+  # Defaults to the chart appVersion when empty
+  tag: ""
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  # Specifies whether a service account should be created
+  create: true
+  # Annotations to add to the service account
+  annotations: {}
+  # The name of the service account to use.
+  # If not set and create is true, a name is generated using the fullname template
+  name: ""
+
+podAnnotations: {}
+podLabels: {}
+
+podSecurityContext:
+  fsGroup: 101
+  runAsNonRoot: true
+  runAsUser: 101
+
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  runAsUser: 101
+
+service:
+  type: ClusterIP
+  port: 80
+  annotations: {}
+  # Optional nodePort used when type is NodePort
+  nodePort: null
+
+ingress:
+  enabled: true
+  className: nginx
+  annotations: {}
+    # cert-manager.io/cluster-issuer: letsencrypt-prod
+  hosts:
+    - host: bakrim.ma
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+  #  - secretName: bakrim-tls
+  #    hosts:
+  #      - bakrim.ma
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 256Mi
+  requests:
+    cpu: 50m
+    memory: 64Mi
+
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 80
+  # targetMemoryUtilizationPercentage: 80
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+topologySpreadConstraints: []
+
+# Extra environment variables for the nginx container
+extraEnv: []
+#  - name: TZ
+#    value: UTC
+
+# Extra volumes / volume mounts for the nginx container
+extraVolumes: []
+extraVolumeMounts: []
+
+# nginx configuration rendered into a ConfigMap and mounted over
+# /etc/nginx/conf.d/default.conf
+nginx:
+  # Bump this (or add a checksum/annotation) to force a rollout on config change
+  configChecksumAnnotation: true
+  # Enable gzip compression for text assets
+  gzip: true
+  # Extra directives injected verbatim into the default server block.
+  # Multi-line strings are supported; keep them properly indented YAML.
+  extraServerDirectives: ""
+  #  add_header X-Frame-Options "SAMEORIGIN" always;
+  #  add_header Permissions-Policy "camera=(), microphone=()" always;
+  # Client max body size (static assets only, so small is fine)
+  clientMaxBodySize: 16m
+
+# Probes are aimed at the nginx container port
+livenessProbe:
+  httpGet:
+    path: /healthz
+    port: http
+  initialDelaySeconds: 5
+  periodSeconds: 10
+  timeoutSeconds: 3
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /healthz
+    port: http
+  initialDelaySeconds: 3
+  periodSeconds: 5
+  timeoutSeconds: 3
+  failureThreshold: 3
+
+# Strategy for rolling updates
+strategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxSurge: 1
+    maxUnavailable: 0
+
+# ---------------------------------------------------------------------------
+# Server-side player proxy (the "block ads at the API" layer)
+#
+# The web build loads third-party player embeds directly into an <iframe>,
+# which nothing server-side can see. When enabled, requests to <host>/e/<host>/…
+# on the ingress are proxied by this service to the real embed origin, which
+# lets the proxy:
+#   * 403 the TrueClick ad scripts by path (…/tc/*) — impossible at DNS level,
+#   * strip X-Frame-Options/CSP, inject <base> so page-relative URLs stay
+#     inside the proxy, and inject guard.js (popunders, fetch/XHR/DOM calls to
+#     known ad hosts, overlay cosmetics),
+#   * rewrite same-origin absolute URLs and keep redirects inside the proxy.
+# The web build wraps its iframe src via src/utils/playerProxy.js.
+playerProxy:
+  enabled: true
+  # k3s CoreDNS ClusterIP; required because proxy_pass uses variables.
+  resolver: "10.43.0.10"
+  image:
+    repository: nginxinc/nginx-unprivileged
+    tag: "1.27-alpine"
+    pullPolicy: IfNotPresent
+  # ── The seed blocklist ──────────────────────────────────────────────────
+  # Not chart-managed anymore (GitOps): the rules ConfigMap is created by the
+  # filter-ui service from its built-in seed on a fresh cluster, and edited
+  # at bakrim.ma/filter afterwards. ArgoCD never touches it.
+  # ── Navigation ALLOWLIST (sw.js): only these hosts + our own /e/ proxy
+  # docs may render as a document inside the player. A new *player* domain
+  # must be added here or its embed gets blocked like an ad — same model as
+  # PLAYER_FRAME_HOSTS in index.js.
+  playerHosts:
+    - vidcore.org
+    - edgeone.dev
+    - vsembed.su
+    - stellarconductornexus.com
+    - allmanga.to
+    - xonaflix.space
+    - created.app
+  resources:
+    limits:
+      cpu: 500m
+      memory: 128Mi
+    requests:
+      cpu: 25m
+      memory: 32Mi
+
+# ---------------------------------------------------------------------------
+# /filter admin page — bakrim.ma/filter
+#
+# A tiny zero-dependency Node service (net_chart/filter-ui) that serves a web
+# UI + API for editing the blocklist. It patches the "-rules" ConfigMap via
+# the in-cluster API; kubelet syncs mounted ConfigMap files within ~60s, so
+# changes reach the player proxy's /e/rules.json (and then the in-browser
+# service worker) with NO helm upgrade and NO pod restart.
+#
+# NOTE: the image is local-only, like bakrim itself:
+#   docker build -t bakrim-filter-ui:1.0.0 net_chart/filter-ui
+#   docker save -o bakrim-filter-ui.tar bakrim-filter-ui:1.0.0
+#   scp ... && docker load && k3s ctr images import ...
+filterUi:
+  enabled: true
+  image:
+    repository: bakrim-filter-ui
+    tag: "1.0.0"
+    pullPolicy: IfNotPresent
+  # Shared admin token for the page (any non-empty value; change it).
+  # Sent as the x-filter-token header; prompted once and stored per browser.
+  token: "change-me"
+  resources:
+    limits:
+      cpu: 200m
+      memory: 128Mi   # runs the AllManga resolver too (/am/resolve)
+    requests:
+      cpu: 10m
+      memory: 32Mi
+
+# Bump to force a pod roll of the movies app WITHOUT an image or config
+# change. GitOps-friendly replacement for `kubectl rollout restart` (which
+# ArgoCD would flag as drift): commit a new value (e.g. today's date) and
+# push — ArgoCD syncs and the pods roll, picking up a freshly imported
+# same-tag image.
+deployNonce: ""
+
+# TMDB token for the clients is NOT chart-managed (GitOps: a chart-managed
+# Secret would be wiped back to its seed on every ArgoCD sync, because
+# ArgoCD renders with `helm template` where lookup is always empty).
+# Create it once per cluster (and rotate the same way — kubelet syncs the
+# mounted file within ~60s, no rebuild or redeploy):
+#   sudo k3s kubectl -n bakrim create secret generic bakrim-net-chart-tmdb --from-literal='config.json={"tmdbToken":"eyJ..."}' --dry-run=client -o yaml | sudo k3s kubectl apply -f -
+# The app's nginx serves it to browsers as /config.json; the deployment
+# mounts it as an optional volume, so pods start fine before it exists.

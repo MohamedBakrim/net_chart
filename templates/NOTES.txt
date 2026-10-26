@@ -1,0 +1,39 @@
+1. Build the image (context is the app source, Dockerfile lives in this chart):
+
+   docker build -f net_chart/Dockerfile ^
+       -t {{ .Values.image.repository }}:{{ include "net_chart.imageTag" . }} ^
+       C:\Users\idk\Desktop\homenet\streambert
+
+   Send it to your server without any registry (build -> save -> scp -> load):
+
+   net_chart\Send-BakrimImage.ps1 -Server user@your-server
+
+   Or push it to a registry and override image.repository / image.tag when
+   installing.
+
+2. Install the chart:
+
+   helm install bakrim ./net_chart -n bakrim --create-namespace
+
+   Or with an existing image:
+
+   helm upgrade --install bakrim ./net_chart -n bakrim --create-namespace ^
+       --set image.repository=registry.example.com/bakrim ^
+       --set image.tag=2.6.0
+
+3. Get the URL:
+
+{{- if .Values.ingress.enabled }}
+{{- range $host := .Values.ingress.hosts }}
+   http{{ if $.Values.ingress.tls }}s{{ end }}://{{ $host.host }}
+{{- end }}
+{{- else if contains "NodePort" .Values.service.type }}
+   export NODE_PORT=$(kubectl get svc -n {{ .Release.Namespace }} {{ include "net_chart.fullname" . }} -o jsonpath="{.spec.ports[0].nodePort}")
+   export NODE_IP=$(kubectl get nodes -o jsonpath="{.items[0].status.addresses[0].address}")
+   http://$NODE_IP:$NODE_PORT
+{{- else if contains "LoadBalancer" .Values.service.type }}
+   kubectl get svc -n {{ .Release.Namespace }} {{ include "net_chart.fullname" . }}
+{{- else }}
+   kubectl port-forward -n {{ .Release.Namespace }} svc/{{ include "net_chart.fullname" . }} 8080:{{ .Values.service.port }}
+   http://localhost:8080
+{{- end }}

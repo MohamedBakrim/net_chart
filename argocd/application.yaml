@@ -1,0 +1,47 @@
+# ArgoCD Application for this chart.
+#
+# NOT a helm template — helm ignores everything outside templates/. Apply it
+# once after ArgoCD is installed (edit repoURL to your GitHub fork first):
+#   sudo k3s kubectl apply -f argocd/application.yaml
+#
+# Everything runtime-owned lives OUTSIDE this chart on purpose:
+#   - rules ConfigMap (bakrim-net-chart-rules)  → created/edited by /filter;
+#     ArgoCD renders with `helm template`, where `lookup` is always empty,
+#     so a chart-managed value would be wiped back to its seed on every sync.
+#   - TMDB Secret (bakrim-net-chart-tmdb)       → created once via kubectl
+#     (see the comment in values.yaml), rotated the same way.
+# Both are simply mounted/referenced by name, so ArgoCD never touches them.
+#
+# Same-tag local images (bakrim:2.6.0 is never pushed to a registry): after
+# `k3s ctr images import`, bump values `deployNonce` (any edit, e.g. today's
+# date) and push — the automated sync rolls the app pods onto the new image.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: bakrim
+  namespace: argocd
+spec:
+  project: default
+  source:
+    # Your GitHub fork of this chart:
+    repoURL: https://github.com/YOUR-USER/net_chart.git
+    targetRevision: main
+    path: .
+    # If you changed the /filter admin token from "change-me", override it
+    # here so ArgoCD keeps applying your value:
+    # helm:
+    #   parameters:
+    #     - name: filterUi.token
+    #       value: "your-real-filter-token"
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: bakrim
+  syncPolicy:
+    # Auto-sync on every push to main. prune/selfHeal stay OFF so anything
+    # you tweak by hand (or pods rolled by hand) is never fought or deleted;
+    # flip them on once you're comfortable with GitOps being the only writer.
+    automated:
+      prune: false
+      selfHeal: false
+    syncOptions:
+      - CreateNamespace=false   # the bakrim namespace already exists

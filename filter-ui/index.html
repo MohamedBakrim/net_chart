@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Bakrim — Ad Filter</title>
+    <style>
+      :root { color-scheme: dark; }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center;
+        background: #0a0a0a; color: #e6e6e6;
+        font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+      }
+      .card {
+        width: min(560px, 92vw); background: #141414; border: 1px solid #262626;
+        border-radius: 14px; padding: 26px 28px; box-shadow: 0 20px 60px rgba(0,0,0,.5);
+      }
+      h1 { margin: 0 0 4px; font-size: 22px; letter-spacing: .3px; }
+      .sub { color: #8a8a8a; font-size: 13px; margin-bottom: 20px; }
+      form { display: flex; gap: 8px; margin-bottom: 14px; }
+      input {
+        flex: 1; background: #0d0d0d; border: 1px solid #303030; border-radius: 8px;
+        color: #e6e6e6; padding: 10px 12px; font-size: 15px; outline: none;
+      }
+      input:focus { border-color: #4f8cff; }
+      button {
+        background: #4f8cff; border: 0; color: #fff; font-weight: 600; font-size: 14px;
+        border-radius: 8px; padding: 10px 16px; cursor: pointer;
+      }
+      button:hover { background: #3c7ae8; }
+      button.ghost { background: transparent; color: #ff5f5f; border: 1px solid #3a1f1f; padding: 4px 9px; font-size: 12px; }
+      button.ghost:hover { background: #1f0f0f; }
+      ul { list-style: none; margin: 0; padding: 0; max-height: 44vh; overflow-y: auto; }
+      li {
+        display: flex; align-items: center; justify-content: space-between; gap: 10px;
+        padding: 8px 12px; border: 1px solid #232323; border-radius: 8px;
+        background: #101010; margin-bottom: 6px; font-family: ui-monospace, monospace; font-size: 13.5px;
+      }
+      .status { min-height: 20px; font-size: 13px; margin-top: 12px; color: #8a8a8a; }
+      .status.ok { color: #5ad17a; } .status.err { color: #ff6b6b; }
+      .note { font-size: 12px; color: #6f6f6f; margin-top: 14px; border-top: 1px solid #222; padding-top: 12px; }
+      .empty { color: #6f6f6f; font-size: 13px; padding: 14px; text-align: center; border: 1px dashed #2a2a2a; border-radius: 8px; }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <h1>Ad filter</h1>
+      <div class="sub">Domains blocked inside the site's player (house-wide, no restart needed)</div>
+
+      <form id="addForm">
+        <input id="host" placeholder="example-ads.com" autocomplete="off" spellcheck="false" />
+        <button type="submit">Block</button>
+      </form>
+
+      <ul id="list"></ul>
+      <div id="empty" class="empty" hidden>No domains yet</div>
+      <div id="status" class="status"></div>
+
+      <div class="note">
+        Changes propagate to browsers within <b>~60 seconds</b> of browsing (the
+        service worker refreshes its rules automatically). If a site still shows
+        up, hard-reload the player page once. This page is protected by the
+        chart's <code>filterUi.token</code>.
+      </div>
+    </div>
+
+    <script>
+      const $ = (id) => document.getElementById(id);
+      const status = (msg, cls) => {
+        const el = $("status");
+        el.textContent = msg || "";
+        el.className = "status " + (cls || "");
+      };
+
+      const getToken = () => {
+        let t = localStorage.getItem("filterToken");
+        if (!t) {
+          t = prompt("Filter admin token (chart value filterUi.token):") || "";
+          if (t) localStorage.setItem("filterToken", t);
+        }
+        return t;
+      };
+
+      const api = async (method, body) => {
+        const r = await fetch("/filter/api/rules", {
+          method,
+          headers: {
+            "Content-Type": "application/json",
+            "x-filter-token": getToken(),
+          },
+          body: body ? JSON.stringify(body) : undefined,
+        });
+        if (r.status === 401) {
+          localStorage.removeItem("filterToken");
+          throw new Error("wrong token — try again");
+        }
+        const j = await r.json();
+        if (!r.ok) throw new Error(j.error || r.status);
+        return j;
+      };
+
+      const render = (rules) => {
+        const list = $("list");
+        list.innerHTML = "";
+        $("empty").hidden = rules.length > 0;
+        for (const host of rules) {
+          const li = document.createElement("li");
+          const span = document.createElement("span");
+          span.textContent = host;
+          const btn = document.createElement("button");
+          btn.className = "ghost";
+          btn.textContent = "remove";
+          btn.onclick = async () => {
+            status("removing " + host + "…");
+            try {
+              const j = await api("DELETE", { host });
+              render(j.rules);
+              status("removed — live within ~60s", "ok");
+            } catch (e) {
+              status(e.message, "err");
+            }
+          };
+          li.append(span, btn);
+          list.appendChild(li);
+        }
+      };
+
+      const refresh = async () => {
+        try {
+          const j = await api("GET");
+          render(j.rules);
+          status("");
+        } catch (e) {
+          status(e.message, "err");
+        }
+      };
+
+      $("addForm").onsubmit = async (e) => {
+        e.preventDefault();
+        const input = $("host");
+        const host = input.value.trim();
+        if (!host) return;
+        status("adding " + host + "…");
+        try {
+          const j = await api("POST", { host });
+          input.value = "";
+          render(j.rules);
+          status(host + " blocked — live within ~60s", "ok");
+          // local browsers: tell the player service worker to refetch now
+          try {
+            const regs = await navigator.serviceWorker.getRegistrations();
+            for (const r of regs)
+              if (r.scope.endsWith("/e/") && r.active)
+                r.active.postMessage("reload-rules");
+          } catch {}
+        } catch (e) {
+          status(e.message, "err");
+        }
+      };
+
+      refresh();
+    </script>
+  </body>
+</html>

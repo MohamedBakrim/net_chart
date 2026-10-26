@@ -1,0 +1,44 @@
+{{- if .Values.filterUi.enabled }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "net_chart.fullname" . }}-filterui
+  labels:
+    {{- include "net_chart.labels" . | nindent 4 }}
+automountServiceAccountToken: true
+---
+# Deliberately narrow: this identity may only read/patch the rules ConfigMap.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "net_chart.fullname" . }}-filterui
+  labels:
+    {{- include "net_chart.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames:
+      - {{ include "net_chart.fullname" . }}-rules
+    verbs: ["get", "update", "patch"]
+  # Fresh-cluster bootstrap: filter-ui creates the rules ConfigMap from its
+  # built-in seed on first access (create can't be name-restricted — the
+  # object doesn't exist yet).
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "net_chart.fullname" . }}-filterui
+  labels:
+    {{- include "net_chart.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "net_chart.fullname" . }}-filterui
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "net_chart.fullname" . }}-filterui
+    namespace: {{ .Release.Namespace }}
+{{- end }}

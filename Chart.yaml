@@ -1,0 +1,15 @@
+apiVersion: v2
+name: net_chart
+description: Helm chart for the Bakrim (streambert) web app - a Vite/React static frontend served by nginx
+type: application
+version: 0.1.0
+appVersion: "2.6.0"
+keywords:
+  - bakrim
+  - streambert
+  - react
+  - vite
+  - nginx
+maintainers:
+  - name: truelockmc
+home: https://github.com/truelockmc
