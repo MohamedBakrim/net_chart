@@ -75,7 +75,14 @@ data:
             proxy_ssl_server_name on;
             proxy_set_header Host $up;
             proxy_set_header Accept-Encoding "";
-            proxy_set_header Referer "";
+            # Hotlink check: stellarconductornexus.com (VidSrc's actual player
+            # doc) answers 403 unless the Referer is vsembed.su — which a
+            # browser loading our page can never send, so nginx spoofs the
+            # embed parent for that host. Everyone else keeps an empty Referer
+            # (what they got before and accept).
+            set $e_ref "";
+            if ($up = "stellarconductornexus.com") { set $e_ref "https://vsembed.su/"; }
+            proxy_set_header Referer $e_ref;
             proxy_set_header X-Forwarded-Host $host;
             proxy_read_timeout 60s;
             proxy_send_timeout 60s;
@@ -91,12 +98,18 @@ data:
             proxy_hide_header Frame-Options;
 
             sub_filter_once off;
+            # JSON too: vs_src.php hands the page the player iframe URL as an
+            # absolute stellarconductornexus.com link — rewritten here so the
+            # iframe loads through this proxy (with the Referer spoofed above)
+            # instead of direct from bakrim.ma, where it gets hotlink-403'd.
+            sub_filter_types application/json;
             # Early in <head>: route relative URLs through /e/<host>/ and load
             # the guard before the page's own scripts parse.
             sub_filter '<head>' '<head><base href="/e/$up/"><script src="/e/guard.js"></script>';
             # Absolute same-origin URLs → proxied equivalents.
             sub_filter 'https://vidcore.org' '/e/vidcore.org';
             sub_filter 'https://vsembed.su' '/e/vsembed.su';
+            sub_filter 'https://stellarconductornexus.com' '/e/stellarconductornexus.com';
         }
     }
 
