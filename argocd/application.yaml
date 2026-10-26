@@ -1,7 +1,7 @@
 # ArgoCD Application for this chart.
 #
 # NOT a helm template — helm ignores everything outside templates/. Apply it
-# once after ArgoCD is installed (edit repoURL to your GitHub fork first):
+# once after ArgoCD is installed:
 #   sudo k3s kubectl apply -f argocd/application.yaml
 #
 # Everything runtime-owned lives OUTSIDE this chart on purpose:
@@ -23,8 +23,8 @@ metadata:
 spec:
   project: default
   source:
-    # Your GitHub fork of this chart:
-    repoURL: https://github.com/YOUR-USER/net_chart.git
+    # Public repo (no credentials needed by ArgoCD):
+    repoURL: https://github.com/MohamedBakrim/net_chart.git
     targetRevision: main
     path: .
     # If you changed the /filter admin token from "change-me", override it
