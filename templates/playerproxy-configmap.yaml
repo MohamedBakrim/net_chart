@@ -75,13 +75,18 @@ data:
             proxy_ssl_server_name on;
             proxy_set_header Host $up;
             proxy_set_header Accept-Encoding "";
-            # Hotlink check: stellarconductornexus.com (VidSrc's actual player
-            # doc) answers 403 unless the Referer is vsembed.su — which a
-            # browser loading our page can never send, so nginx spoofs the
-            # embed parent for that host. Everyone else keeps an empty Referer
-            # (what they got before and accept).
+            # Hotlink checks on the VidSrc chain — a browser on bakrim.ma can
+            # only send bakrim.ma (403) or nothing (404), so nginx spoofs what
+            # the natural flow sends. Both ends verified endpoint-by-endpoint:
+            #   /embed/movie|tv/  top hop, loaded from vsembed's page with
+            #                    referrerpolicy=origin -> https://vsembed.su/
+            #   all other paths  player doc + assets (same-origin there)
+            #                    -> https://stellarconductornexus.com/
+            # Every other host keeps the empty Referer it accepts today.
             set $e_ref "";
-            if ($up = "stellarconductornexus.com") { set $e_ref "https://vsembed.su/"; }
+            if ($up = "stellarconductornexus.com") { set $e_ref "https://stellarconductornexus.com/"; }
+            set $ep "$up$rest";
+            if ($ep ~ "^stellarconductornexus\.com/embed/(movie|tv)/") { set $e_ref "https://vsembed.su/"; }
             proxy_set_header Referer $e_ref;
             proxy_set_header X-Forwarded-Host $host;
             proxy_read_timeout 60s;
@@ -110,6 +115,18 @@ data:
             sub_filter 'https://vidcore.org' '/e/vidcore.org';
             sub_filter 'https://vsembed.su' '/e/vsembed.su';
             sub_filter 'https://stellarconductornexus.com' '/e/stellarconductornexus.com';
+            # Root-relative refs (src="/assets/x.js", "playerUrl":"/embed/…")
+            # ignore <base> — a leading slash resets to the origin — and would
+            # land on bakrim.ma's own root: the app SPA or its /assets 404s.
+            # That is what killed VidSrc on web while desktop kept working.
+            # Re-anchor them under /e/<host>/ too; leftmost match wins, so the
+            # attribute rules beat the bare "/ pattern on shared text, and the
+            # injected head above is safe (single pass over the original body).
+            sub_filter 'src="/' 'src="/e/$up/';
+            sub_filter 'href="/' 'href="/e/$up/';
+            sub_filter 'action="/' 'action="/e/$up/';
+            sub_filter 'poster="/' 'poster="/e/$up/';
+            sub_filter '"/' '"/e/$up/';
         }
     }
 
