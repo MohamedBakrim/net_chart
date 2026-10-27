@@ -23,6 +23,8 @@ spec:
       secretName: {{ .secretName }}
     {{- end }}
   {{- end }}
+  # Single backend: everything (site, /e/ player proxy included) is served
+  # by the app's own nginx now — no separate player-proxy/filter services.
   rules:
     {{- range .Values.ingress.hosts }}
     - host: {{ .host | quote }}
@@ -34,38 +36,6 @@ spec:
             backend:
               service:
                 name: {{ include "net_chart.fullname" $ }}
-                port:
-                  name: http
-          {{- end }}
-          {{- if $.Values.playerProxy.enabled }}
-          - path: /e/
-            pathType: Prefix
-            backend:
-              service:
-                name: {{ include "net_chart.fullname" $ }}-playerproxy
-                port:
-                  name: http
-          - path: /v
-            pathType: Prefix
-            backend:
-              service:
-                name: {{ include "net_chart.fullname" $ }}-playerproxy
-                port:
-                  name: http
-          {{- end }}
-          {{- if $.Values.filterUi.enabled }}
-          - path: /filter
-            pathType: Prefix
-            backend:
-              service:
-                name: {{ include "net_chart.fullname" $ }}-filterui
-                port:
-                  name: http
-          - path: /am
-            pathType: Prefix
-            backend:
-              service:
-                name: {{ include "net_chart.fullname" $ }}-filterui
                 port:
                   name: http
           {{- end }}

@@ -42,6 +42,111 @@ data:
             add_header Access-Control-Allow-Origin "*" always;
         }
 
+        {{- if .Values.playerProxy.enabled }}
+        # ── Player proxy (baked into the app — no separate pod) ────────────
+        # VidSrc-family embeds hotlink-check the Referer (403 from any other
+        # origin) and send X-Frame-Options/CSP that refuse framing — neither
+        # can be satisfied by a browser on bakrim.ma. So /e/<host>/<path>
+        # proxies to the real embed origin with the Referer it expects,
+        # strips the framing headers, re-anchors absolute + root-relative
+        # refs under /e/<host>/ (the injected <base> covers relative ones),
+        # injects guard.js, and keeps redirect chains inside the proxy.
+        # Needed because proxy_pass below uses variables (dynamic upstream).
+        resolver {{ .Values.playerProxy.resolver }} valid=10s ipv6=off;
+
+        # The injected guard script + its service worker (files from this
+        # same ConfigMap, mounted at /etc/nginx/player).
+        location = /e/guard.js {
+            alias /etc/nginx/player/guard.js;
+            default_type application/javascript;
+            add_header Cache-Control "no-store";
+        }
+        location = /e/sw.js {
+            alias /etc/nginx/player/sw.js;
+            default_type application/javascript;
+            add_header Cache-Control "no-store";
+        }
+
+        # TrueClick ad scripts, killed by path. Only reachable here because
+        # the <base> tag makes every relative URL of the proxied page
+        # (e.g. /tc/ff-tag.php) resolve back through this proxy.
+        location ~ ^/e/[^/]+/tc/ {
+            return 403;
+        }
+
+        location ~ ^/e/(?<up>[^/]+)(?<rest>/.*)$ {
+            proxy_pass https://$up$rest$is_args$args;
+            proxy_ssl_server_name on;
+            proxy_set_header Host $up;
+            proxy_set_header Accept-Encoding "";
+            # The vidsinc player mints its stream_urls api_token as a JWT
+            # whose ip claim is taken from X-Forwarded-For (verified: a fake
+            # XFF header lands verbatim in the token), and the later direct
+            # call to data.vidsrc.sh is validated against the caller's real
+            # IP. Forwarding the ingress XFF (it contains the ingress pod IP)
+            # minted tokens the browser's own request could never match ->
+            # 403 "invalid api token" -> no streams. Blank the forwarded
+            # client headers so the upstream records our real egress — the
+            # LAN's public IP, the same one the browser's direct call comes
+            # from, matching the desktop (direct) flow that works.
+            proxy_set_header X-Forwarded-For "";
+            proxy_set_header X-Real-IP "";
+            proxy_set_header Forwarded "";
+            # Hotlink checks on the VidSrc chain — a browser on bakrim.ma can
+            # only send bakrim.ma (403) or nothing (404), so nginx spoofs what
+            # the natural flow sends. Both ends verified endpoint-by-endpoint:
+            #   /embed/movie|tv/  top hop, loaded from vsembed's page with
+            #                    referrerpolicy=origin -> https://vsembed.su/
+            #   all other paths  player doc + assets (same-origin there)
+            #                    -> https://stellarconductornexus.com/
+            # Every other host keeps the empty Referer it accepts today.
+            set $e_ref "";
+            if ($up = "stellarconductornexus.com") { set $e_ref "https://stellarconductornexus.com/"; }
+            set $ep "$up$rest";
+            if ($ep ~ "^stellarconductornexus\.com/embed/(movie|tv)/") { set $e_ref "https://vsembed.su/"; }
+            proxy_set_header Referer $e_ref;
+            proxy_set_header X-Forwarded-Host $host;
+            proxy_read_timeout 60s;
+            proxy_send_timeout 60s;
+
+            # Keep whole redirect chains inside the proxy instead of letting
+            # the browser jump straight to the target (ad redirect landings).
+            proxy_redirect ~^https?://([^/]+)(/.*)$ /e/$1$2;
+
+            # They render inside our <iframe> only if these are gone.
+            proxy_hide_header X-Frame-Options;
+            proxy_hide_header Content-Security-Policy;
+            proxy_hide_header Content-Security-Policy-Report-Only;
+            proxy_hide_header Frame-Options;
+
+            sub_filter_once off;
+            # JSON too: vs_src.php hands the page the player iframe URL as an
+            # absolute stellarconductornexus.com link — rewritten here so the
+            # iframe loads through this proxy (with the Referer spoofed above)
+            # instead of direct from bakrim.ma, where it gets hotlink-403'd.
+            sub_filter_types application/json;
+            # Early in <head>: route relative URLs through /e/<host>/ and load
+            # the guard before the page's own scripts parse.
+            sub_filter '<head>' '<head><base href="/e/$up/"><script src="/e/guard.js"></script>';
+            # Absolute same-origin URLs → proxied equivalents.
+            sub_filter 'https://vidcore.org' '/e/vidcore.org';
+            sub_filter 'https://vsembed.su' '/e/vsembed.su';
+            sub_filter 'https://stellarconductornexus.com' '/e/stellarconductornexus.com';
+            # Root-relative refs (src="/assets/x.js", "playerUrl":"/embed/…")
+            # ignore <base> — a leading slash resets to the origin — and would
+            # land on bakrim.ma's own root: the app SPA or its /assets 404s.
+            # That is what killed VidSrc on web while desktop kept working.
+            # Re-anchor them under /e/<host>/ too; leftmost match wins, so the
+            # attribute rules beat the bare "/ pattern on shared text, and the
+            # injected head above is safe (single pass over the original body).
+            sub_filter 'src="/' 'src="/e/$up/';
+            sub_filter 'href="/' 'href="/e/$up/';
+            sub_filter 'action="/' 'action="/e/$up/';
+            sub_filter 'poster="/' 'poster="/e/$up/';
+            sub_filter '"/' '"/e/$up/';
+        }
+        {{- end }}
+
         # SPA fallback - React Router style routing
         location / {
             try_files $uri $uri/ /index.html;
@@ -78,3 +183,153 @@ data:
         add_header X-Frame-Options "SAMEORIGIN" always;
         add_header Referrer-Policy "strict-origin-when-cross-origin" always;
     }
+
+  # Runs inside the browser on the proxied player documents only (scope /e/).
+  # This is the web-build equivalent of index.js frameNavAllowed: cancels the
+  # one request a server-side proxy can never see — the iframe navigating
+  # itself to a rotating ad landing (www.wps.com, trip.com, Google cloaks…)
+  # — and drops subresources from known ad hosts at the network layer.
+  sw.js: |
+    /* Streambert player-proxy service worker. Registered by guard.js.
+       Both lists are baked from chart values (?v=<revision> on the script
+       URL busts the browser cache whenever they change). */
+    const PLAYER_HOSTS = [
+      {{- range .Values.playerProxy.playerHosts }}
+      {{ . | quote }},{{- end }}
+    ];
+    const BLOCKED_HOSTS = [
+      {{- range .Values.playerProxy.blockedHosts }}
+      {{ . | quote }},{{- end }}
+    ];
+    const SCOPE_ORIGIN = new URL(self.registration.scope).origin;
+
+    function match(host, list) {
+      host = (host || "").toLowerCase();
+      return list.some((d) => host === d || host.endsWith("." + d));
+    }
+
+    self.addEventListener("install", (e) => e.waitUntil(self.skipWaiting()));
+    self.addEventListener("activate", (e) => e.waitUntil(self.clients.claim()));
+
+    self.addEventListener("fetch", (e) => {
+      const req = e.request;
+      let url;
+      try { url = new URL(req.url); } catch { return; }
+      // about:blank / blob: / data: frames and media — never touched
+      if (url.protocol !== "http:" && url.protocol !== "https:") return;
+
+      const isNavigation =
+        req.mode === "navigate" || req.destination === "document";
+
+      if (isNavigation) {
+        // Allowlist: our own proxied docs + known player hosts. Anything else
+        // trying to render as a document inside the player is an ad.
+        if (url.origin === SCOPE_ORIGIN) return;
+        if (match(url.hostname, PLAYER_HOSTS)) return;
+        e.respondWith(new Response(
+          "<!doctype html><title>Blocked</title><p>Ad navigation blocked by Streambert.</p>",
+          { status: 403, headers: { "content-type": "text/html" } }
+        ));
+        return;
+      }
+
+      // Non-navigation: drop known ad/tracker hosts outright.
+      if (match(url.hostname, BLOCKED_HOSTS)) {
+        e.respondWith(Response.error());
+      }
+    });
+
+  guard.js: |
+    /* Streambert server-side ad guard — injected by the app's nginx into
+       every proxied player document (runs before the page's own scripts). */
+    (function () {
+      if (window.__sbGuard) return;
+      window.__sbGuard = true;
+
+      var BAD = [
+        {{- range .Values.playerProxy.blockedHosts }}
+        {{ . | quote }},{{- end }}
+      ];
+      function bad(u) {
+        try {
+          var h = new URL(u, location.href).hostname.toLowerCase();
+          for (var i = 0; i < BAD.length; i++) {
+            var d = BAD[i];
+            if (h === d || h.slice(-(d.length + 1)) === "." + d) return true;
+          }
+        } catch (e) {}
+        return false;
+      }
+
+      /* The navigation blocker: a fetch-level interceptor for every request of
+         this document (including location.href redirects JS can't cancel).
+         ?v= is the helm release revision, so rule updates reach browsers. */
+      try {
+        if (navigator.serviceWorker && !window.__sbSw) {
+          window.__sbSw = true;
+          navigator.serviceWorker.register(
+            "/e/sw.js?v={{ .Release.Revision }}",
+            { scope: "/e/", updateViaCache: "none" }
+          ).catch(function () {});
+        }
+      } catch (e) {}
+
+      /* popunders / forced window.open */
+      try { window.open = function () { return null; }; } catch (e) {}
+
+      /* fetch() to ad hosts */
+      try {
+        var of = window.fetch;
+        window.fetch = function (input) {
+          var u = typeof input === "string" ? input : (input && input.url) || "";
+          if (bad(u)) return Promise.reject(new TypeError("blocked by streambert guard"));
+          return of.apply(this, arguments);
+        };
+      } catch (e) {}
+
+      /* XHR to ad hosts */
+      try {
+        var oxo = XMLHttpRequest.prototype.open;
+        XMLHttpRequest.prototype.open = function (m, u) {
+          if (bad(String(u))) { this.__sbBlocked = true; return; }
+          return oxo.apply(this, arguments);
+        };
+        var oxs = XMLHttpRequest.prototype.send;
+        XMLHttpRequest.prototype.send = function () {
+          if (this.__sbBlocked) return;
+          return oxs.apply(this, arguments);
+        };
+      } catch (e) {}
+
+      /* late <script>/<iframe> pointing at ad hosts */
+      try {
+        new MutationObserver(function (ms) {
+          for (var i = 0; i < ms.length; i++) {
+            var ns = ms[i].addedNodes;
+            if (!ns) continue;
+            for (var j = 0; j < ns.length; j++) {
+              var n = ns[j];
+              if (!n || n.nodeType !== 1) continue;
+              var t = n.tagName;
+              if (t !== "SCRIPT" && t !== "IFRAME" && t !== "LINK") continue;
+              var src = n.src;
+              if (!src && n.getAttribute) src = n.getAttribute("src") || n.getAttribute("href");
+              if (src && bad(src)) { try { n.parentNode.removeChild(n); } catch (e) {} }
+            }
+          }
+        }).observe(document.documentElement || document, { childList: true, subtree: true });
+      } catch (e) {}
+
+      /* clicks navigating to ad / affiliate landings */
+      document.addEventListener("click", function (e) {
+        var a = e.target && e.target.closest ? e.target.closest("a[href]") : null;
+        if (a && bad(a.href)) { e.preventDefault(); e.stopPropagation(); }
+      }, true);
+
+      /* cosmetic: sweep / interstitial overlays */
+      try {
+        var s = document.createElement("style");
+        s.textContent = "[class*=sweep],[id*=sweep],[class*=interstitial],[id*=interstitial]{display:none!important}";
+        (document.head || document.documentElement).appendChild(s);
+      } catch (e) {}
+    })();
