@@ -60,6 +60,11 @@ data:
             proxy_ssl_server_name on;
             proxy_set_header Host $vup;
             proxy_set_header Accept-Encoding "";
+            # Don't leak the caller (or the ingress pod) to the CDN — the
+            # Referer/Origin above are the only identity it should see.
+            proxy_set_header X-Forwarded-For "";
+            proxy_set_header X-Real-IP "";
+            proxy_set_header Forwarded "";
             proxy_set_header Referer "https://$vref/";
             proxy_set_header Origin "https://$vref";
             proxy_set_header User-Agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0";
@@ -75,6 +80,20 @@ data:
             proxy_ssl_server_name on;
             proxy_set_header Host $up;
             proxy_set_header Accept-Encoding "";
+            # The vidsinc player mints its stream_urls api_token as a JWT whose
+            # ip claim is taken from X-Forwarded-For (verified: a fake XFF
+            # header lands verbatim in the token), and the later direct call
+            # to data.vidsrc.sh is validated against the caller's real IP.
+            # Forwarding the ingress XFF here (it contains the ingress pod IP,
+            # e.g. 10.42.0.1) minted tokens the browser's own request could
+            # never match -> 403 "invalid api token" -> no streams -> black
+            # player. Blank the forwarded client headers so the upstream
+            # records this pod's real egress — the LAN's public IP, the same
+            # one the browser's direct stream_urls call comes from, which is
+            # exactly the desktop (direct) flow that works.
+            proxy_set_header X-Forwarded-For "";
+            proxy_set_header X-Real-IP "";
+            proxy_set_header Forwarded "";
             # Hotlink checks on the VidSrc chain — a browser on bakrim.ma can
             # only send bakrim.ma (403) or nothing (404), so nginx spoofs what
             # the natural flow sends. Both ends verified endpoint-by-endpoint:
