@@ -42,6 +42,50 @@ data:
             add_header Access-Control-Allow-Origin "*" always;
         }
 
+        # ── AllManga web resolver bridge ──────────────────────────────────
+        # The website build resolves AllManga in the browser, but hianime.at
+        # and the embed host send no CORS headers, and the HLS CDN 403s
+        # unless the Referer is the embed origin (a forbidden header in JS).
+        # nginx bridges both: /gw/<host>/<path> is a same-origin GET/POST
+        # passthrough, /v/ streams media with the Referer the CDN checks.
+        # k3s CoreDNS IP — required because proxy_pass uses variables.
+        resolver 10.43.0.10 valid=10s ipv6=off;
+
+        location ~ ^/gw/(?<gwhost>[^/]+)(?<gwrest>/.*)$ {
+            proxy_pass https://$gwhost$gwrest$is_args$args;
+            proxy_ssl_server_name on;
+            proxy_set_header Host $gwhost;
+            proxy_set_header Accept-Encoding "";
+            proxy_set_header User-Agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0";
+            # Don't leak the caller / ingress pod IP upstream.
+            proxy_set_header X-Forwarded-For "";
+            proxy_set_header X-Real-IP "";
+            proxy_set_header Forwarded "";
+            # Keep redirect chains inside the gateway (hianime 301s).
+            proxy_redirect ~^https?://([^/]+)(/.*)$ /gw/$1$2;
+            proxy_read_timeout 30s;
+        }
+
+        # Media proxy for /am-player.html. First segment is the referer
+        # DOMAIN, second the upstream host — HLS relative segment URLs then
+        # resolve against the same prefix and keep the Referer.
+        location ~ ^/v/(?<vref>[^/]+)/(?<vup>[^/]+)(?<vrest>/.*)?$ {
+            proxy_pass https://$vup$vrest$is_args$args;
+            proxy_ssl_server_name on;
+            proxy_set_header Host $vup;
+            proxy_set_header Accept-Encoding "";
+            proxy_set_header X-Forwarded-For "";
+            proxy_set_header X-Real-IP "";
+            proxy_set_header Forwarded "";
+            proxy_set_header Referer "https://$vref/";
+            proxy_set_header Origin "https://$vref";
+            proxy_set_header User-Agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0";
+            proxy_set_header Range $http_range;
+            proxy_set_header If-Range $http_if_range;
+            proxy_force_ranges on;
+            proxy_read_timeout 1h;
+        }
+
         # SPA fallback - React Router style routing
         location / {
             try_files $uri $uri/ /index.html;
