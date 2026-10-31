@@ -23,8 +23,7 @@ spec:
       secretName: {{ .secretName }}
     {{- end }}
   {{- end }}
-  # Single backend: everything (site, /e/ player proxy included) is served
-  # by the app's own nginx now — no separate player-proxy/filter services.
+  # Single backend: the app's own nginx (SPA + /config.json).
   rules:
     {{- range .Values.ingress.hosts }}
     - host: {{ .host | quote }}

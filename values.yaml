@@ -1,7 +1,7 @@
 # Default values for net_chart.
 # Bakrim (streambert) web app - Vite/React static build served by nginx.
 
-replicaCount: 2
+replicaCount: 1
 
 image:
   # Build with:
@@ -138,83 +138,6 @@ strategy:
     maxSurge: 1
     maxUnavailable: 0
 
-# ---------------------------------------------------------------------------
-# Player proxy — BAKED INTO THE APP'S NGINX (no separate pod or service).
-#
-# The web build loads third-party player embeds into an <iframe>, which
-# nothing server-side can see on their origin: the VidSrc chain hotlink-
-# checks the Referer (403 from bakrim.ma) and sends X-Frame-Options/CSP
-# that refuse framing. So /e/<host>/<path> on the app's own nginx proxies
-# to the real embed origin with the Referer it expects, strips the framing
-# headers, re-anchors absolute + root-relative refs under /e/<host>/,
-# injects <base> + guard.js (popunders, fetch/XHR/DOM calls to ad hosts),
-# and keeps redirect chains inside the proxy.
-# The web build wraps its iframe src via src/utils/playerProxy.js.
-playerProxy:
-  enabled: true
-  # k3s CoreDNS ClusterIP; required because proxy_pass uses variables.
-  resolver: "10.43.0.10"
-  # ── Navigation ALLOWLIST (sw.js): only these hosts + our own /e/ proxy
-  # docs may render as a document inside the player. A new *player* domain
-  # must be added here or its embed gets blocked like an ad — same model as
-  # PLAYER_FRAME_HOSTS in index.js.
-  playerHosts:
-    - vidcore.org
-    - edgeone.dev
-    - vsembed.su
-    - stellarconductornexus.com
-    - allmanga.to
-    - xonaflix.space
-    - created.app
-  # ── THE blocklist ───────────────────────────────────────────────────────
-  # Baked into guard.js + sw.js at render time (this replaces the old live
-  # /filter rules ConfigMap — that whole path is gone; edit here + push).
-  blockedHosts:
-    - apiguinee.org
-    - benchform.org
-    - biomanos.org
-    - static.nresystems.com
-    - cdn.show-sb.com
-    - cdn.holdbitter.com
-    - mamshirt.com
-    - portalfluently.com
-    - crdcntrl.net
-    - dtscout.com
-    - adsco.re
-    - bvtpk.com
-    - rtmark.net
-    - b7510.com
-    - unbrownunflat.com
-    - malocacomals.com
-    - sixmossin.com
-    - realizationnewestfangs.com
-    - acscdn.com
-    - taloseempest.com
-    - profitableratecpm.com
-    - preferencenail.com
-    - protrafficinspector.com
-    - histats.com
-    - weirdopt.com
-    - kettledroopingcontinuation.com
-    - wayfarerorthodox.com
-    - woxaglasuy.net
-    - adeptspiritual.com
-    - calculating-laugh.com
-    - amavhxdlofklxjg.xyz
-    - usrpubtrk.com
-    - adexchangeclear.com
-    - cloudnestra.com
-    - neonhorizonworkshops.com
-    - googletagmanager.com
-    - google-analytics.com
-    - doubleclick.net
-    - googlesyndication.com
-    - yandex.ru
-    - trip.com
-    - wps.com
-    - casinokenta.sbs
-    - casinowilhelm.online
-    - desylunfeel.cfd
 
 # Bump to force a pod roll of the movies app WITHOUT an image or config
 # change. GitOps-friendly replacement for `kubectl rollout restart` (which
